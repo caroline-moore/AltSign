@@ -132,12 +132,18 @@ public extension ALTAppleAPI
                             context.dsid = dsid
                             
                             let authType = statusDictionary["au"] as? String
-                            switch authType
+                            let httpStatusCode = statusDictionary["hsc"] as? Int
+
+                            // Since October 2026 Apple often sends the code to trusted devices on its own, answering with HTTP status 409 and no "au" value instead of "trustedDeviceSecondaryAuth".
+                            let isCodeAlreadySent = (authType ?? "").isEmpty && httpStatusCode == 409
+                            let resolvedAuthType = isCodeAlreadySent ? "trustedDeviceSecondaryAuth" : authType
+
+                            switch resolvedAuthType
                             {
                             case "trustedDeviceSecondaryAuth":
                                 guard let verificationHandler = verificationHandler else { throw ALTAppleAPIError(.requiresTwoFactorAuthentication) }
-                                
-                                self.requestTrustedDeviceTwoFactorCode(dsid: dsid, idmsToken: idmsToken, anisetteData: anisetteData, verificationHandler: verificationHandler) { (result) in
+
+                                self.requestTrustedDeviceTwoFactorCode(dsid: dsid, idmsToken: idmsToken, anisetteData: anisetteData, isCodeAlreadySent: isCodeAlreadySent, verificationHandler: verificationHandler) { (result) in
                                     switch result
                                     {
                                     case .failure(let error): completionHandler(nil, nil, error)
@@ -248,11 +254,60 @@ private extension ALTAppleAPI
     func requestTrustedDeviceTwoFactorCode(dsid: String,
                                            idmsToken: String,
                                            anisetteData: ALTAnisetteData,
+                                           isCodeAlreadySent: Bool,
                                            verificationHandler: @escaping (@escaping (String?) -> Void) -> Void,
                                            completionHandler: @escaping (Result<Void, Error>) -> Void)
     {
         let requestURL = URL(string: "https://gsa.apple.com/auth/verify/trusteddevice")!
         let verifyURL = URL(string: "https://gsa.apple.com/grandslam/GsService2/validate")!
+        
+        func responseHandler(verificationCode: String?)
+        {
+            do
+            {
+                guard let verificationCode = verificationCode else { throw ALTAppleAPIError(.requiresTwoFactorAuthentication) }
+                
+                var request = self.makeTwoFactorCodeRequest(url: verifyURL, dsid: dsid, idmsToken: idmsToken, anisetteData: anisetteData)
+                request.allHTTPHeaderFields?["security-code"] = verificationCode
+                
+                self.sendGSARequest(request) { (result) in
+                    do
+                    {
+                        let (data, httpResponse) = try result.get()
+                        
+                        guard (200 ..< 300).contains(httpResponse.statusCode) else { throw ALTAppleAPIError.unknown(statusCode: httpResponse.statusCode) }
+                        
+                        guard let responseDictionary = try PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any] else {
+                            throw URLError(.badServerResponse)
+                        }
+                        
+                        let errorCode = responseDictionary["ec"] as? Int ?? 0
+                        guard errorCode != 0 else { return completionHandler(.success(())) }
+                        
+                        switch errorCode
+                        {
+                        case -21669: throw ALTAppleAPIError(.incorrectVerificationCode)
+                        default:
+                            guard let errorDescription = responseDictionary["em"] as? String else { throw ALTAppleAPIError.unknown() }
+                            
+                            let localizedDescription = errorDescription + " (\(errorCode))"
+                            throw NSError(domain: ALTUnderlyingAppleAPIErrorDomain, code: errorCode, userInfo: [NSLocalizedDescriptionKey: localizedDescription])
+                        }
+                    }
+                    catch
+                    {
+                        completionHandler(.failure(error))
+                    }
+                }
+            }
+            catch
+            {
+                completionHandler(.failure(error))
+            }
+        }
+        
+        // Apple already sent the code to the user's trusted devices, so asking for another one would invalidate it. Just prompt for the code Apple sent.
+        guard !isCodeAlreadySent else { return verificationHandler(responseHandler) }
         
         let request = self.makeTwoFactorCodeRequest(url: requestURL, dsid: dsid, idmsToken: idmsToken, anisetteData: anisetteData)
         
@@ -262,51 +317,6 @@ private extension ALTAppleAPI
                 let (_, response) = try result.get()
                 guard (200 ..< 300).contains(response.statusCode) else {
                     throw ALTAppleAPIError.unknown(statusCode: response.statusCode, failure: NSLocalizedString("Could not request a verification code from Apple.", comment: ""))
-                }
-                
-                func responseHandler(verificationCode: String?)
-                {
-                    do
-                    {
-                        guard let verificationCode = verificationCode else { throw ALTAppleAPIError(.requiresTwoFactorAuthentication) }
-                                                
-                        var request = self.makeTwoFactorCodeRequest(url: verifyURL, dsid: dsid, idmsToken: idmsToken, anisetteData: anisetteData)
-                        request.allHTTPHeaderFields?["security-code"] = verificationCode
-                        
-                        self.sendGSARequest(request) { (result) in
-                            do
-                            {
-                                let (data, httpResponse) = try result.get()
-                                
-                                guard (200 ..< 300).contains(httpResponse.statusCode) else { throw ALTAppleAPIError.unknown(statusCode: httpResponse.statusCode) }
-                                
-                                guard let responseDictionary = try PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any] else {
-                                    throw URLError(.badServerResponse)
-                                }
-                                
-                                let errorCode = responseDictionary["ec"] as? Int ?? 0
-                                guard errorCode != 0 else { return completionHandler(.success(())) }
-                                
-                                switch errorCode
-                                {
-                                case -21669: throw ALTAppleAPIError(.incorrectVerificationCode)
-                                default:
-                                    guard let errorDescription = responseDictionary["em"] as? String else { throw ALTAppleAPIError.unknown() }
-                                    
-                                    let localizedDescription = errorDescription + " (\(errorCode))"
-                                    throw NSError(domain: ALTUnderlyingAppleAPIErrorDomain, code: errorCode, userInfo: [NSLocalizedDescriptionKey: localizedDescription])
-                                }
-                            }
-                            catch
-                            {
-                                completionHandler(.failure(error))
-                            }
-                        }
-                    }
-                    catch
-                    {
-                        completionHandler(.failure(error))
-                    }
                 }
                 
                 verificationHandler(responseHandler)
