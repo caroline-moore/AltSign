@@ -28,6 +28,10 @@ NS_ASSUME_NONNULL_BEGIN
 
 @property (class, nonatomic, readonly) ALTAppleAPI *sharedAPI;
 
+// Optional. Called once when GrandSlam answers hsc 434 (anisette data out of sync) with the X-Apple-I-MD-DATA
+// value it returned. The handler should resynchronize the anisette provider and return fresh anisette data.
+@property (nonatomic, copy, nullable) void (^anisetteDataResyncHandler)(NSString *sim, void (^completionHandler)(ALTAnisetteData *_Nullable anisetteData, NSError *_Nullable error));
+
 /* Teams */
 - (void)fetchTeamsForAccount:(ALTAccount *)account session:(ALTAppleAPISession *)session
            completionHandler:(void (^)(NSArray<ALTTeam *> *_Nullable teams, NSError *_Nullable error))completionHandler;
