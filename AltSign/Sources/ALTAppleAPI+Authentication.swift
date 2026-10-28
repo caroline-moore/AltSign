@@ -519,7 +519,8 @@ private extension ALTAppleAPI
 private extension ALTAppleAPI
 {
     // GrandSlam rejects requests whose User-Agent and X-MMe-Client-Info don't match the client that generated the anisette data.
-    var userAgent: String { self.authenticationUserAgent ?? "akd/1.0 CFNetwork/808.1.4" }
+    // Keep the Darwin version — without it Apple answers most requests carrying this string with HTTP 503.
+    var userAgent: String { self.authenticationUserAgent ?? "akd/1.0 CFNetwork/808.1.4 Darwin/16.7.0" }
     
     func sendGSARequest(_ request: URLRequest, completionHandler: @escaping (Result<(Data, HTTPURLResponse), Error>) -> Void)
     {
